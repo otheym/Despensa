@@ -2,6 +2,7 @@ package com.casa.despensa.ui.pantry
 
 
 
+
 import android.database.sqlite.SQLiteConstraintException
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -58,6 +59,14 @@ data class NewProductDraft(
     val lookupFailed: Boolean = false,
 )
 
+/** Producto ya registrado cuyo código se acaba de escanear. */
+data class ScannedProduct(
+    val id: Long,
+    val name: String,
+    /** Cantidad en casa en el momento del escaneo. */
+    val quantity: Int,
+)
+
 data class PantryUiState(
     val query: String = "",
     val sections: List<PantrySection> = emptyList(),
@@ -66,6 +75,8 @@ data class PantryUiState(
     val newProduct: NewProductDraft? = null,
     /** Producto en edición → la UI muestra el diálogo de edición. */
     val editing: PantryItemUi? = null,
+    /** Producto escaneado → la UI muestra el diálogo para sumar o restar unidades. */
+    val scanned: ScannedProduct? = null,
     /** Tiendas conocidas, para sugerirlas en los diálogos. */
     val storeNames: List<String> = emptyList(),
     /** Última tienda usada, para prerrellenar el campo. */
@@ -89,6 +100,7 @@ class PantryViewModel(
     private val newProduct = MutableStateFlow<NewProductDraft?>(null)
     private var lookupJob: Job? = null
     private val editing = MutableStateFlow<PantryItemUi?>(null)
+    private val scanned = MutableStateFlow<ScannedProduct?>(null)
 
     private val _events = Channel<PantryEvent>(Channel.BUFFERED)
     /** Eventos de un solo uso (snackbars). */
@@ -105,14 +117,19 @@ class PantryViewModel(
             names to last
         }
 
+    /** Los tres diálogos en un solo flow, para no pasar de 5 entradas en el combine. */
+    private val dialogs: Flow<Triple<NewProductDraft?, PantryItemUi?, ScannedProduct?>> =
+        combine(newProduct, editing, scanned) { draft, edit, scan -> Triple(draft, edit, scan) }
+
     val uiState: StateFlow<PantryUiState> =
-        combine(query, products, newProduct, editing, storeInfo) { q, list, draft, edit, stores ->
+        combine(query, products, dialogs, storeInfo) { q, list, open, stores ->
             PantryUiState(
                 query = q,
                 sections = list.toSections(),
                 isLoading = false,
-                newProduct = draft,
-                editing = edit,
+                newProduct = open.first,
+                editing = open.second,
+                scanned = open.third,
                 storeNames = stores.first,
                 lastStoreName = stores.second,
             )
@@ -150,13 +167,36 @@ class PantryViewModel(
         val code = rawValue?.trim().orEmpty()
         if (code.isEmpty()) return
         viewModelScope.launch {
-            when (val result = repository.registerScan(code)) {
-                is ScanResult.Incremented ->
-                    message("${result.product.name}: ${result.product.quantity} en casa")
+            when (val result = repository.findScanned(code)) {
+                is ScanResult.Found -> scanned.value = ScannedProduct(
+                    id = result.product.id,
+                    name = result.product.name,
+                    quantity = result.product.quantity,
+                )
                 is ScanResult.Unknown ->
                     startNewProduct(result.barcode)
             }
         }
+    }
+
+    /**
+     * Confirma la cantidad elegida tras escanear. Se aplica como movimiento (+n / −n) respecto
+     * a la cantidad del momento del escaneo, así se suma bien con otros cambios y con la sincronización.
+     */
+    fun onConfirmScan(newQuantity: Int) {
+        val item = scanned.value ?: return
+        scanned.value = null
+        val delta = newQuantity.coerceAtLeast(0) - item.quantity
+        if (delta == 0) return
+        viewModelScope.launch {
+            repository.adjustQuantity(item.id, delta)
+            val sign = if (delta > 0) "+" else "−"
+            message("${item.name}: $sign${kotlin.math.abs(delta)} · ${newQuantity.coerceAtLeast(0)} en casa")
+        }
+    }
+
+    fun onDismissScan() {
+        scanned.value = null
     }
 
     /** Abre el diálogo de alta al momento y lanza la búsqueda en línea en paralelo. */
@@ -190,7 +230,7 @@ class PantryViewModel(
         newProduct.value = null
     }
 
-    fun onRegisterNewProduct(name: String, priceText: String, storeText: String) {
+    fun onRegisterNewProduct(name: String, priceText: String, storeText: String, quantity: Int) {
         val barcode = newProduct.value?.barcode ?: return
         val cleanName = name.trim()
         if (cleanName.isEmpty()) return
@@ -205,7 +245,7 @@ class PantryViewModel(
                     barcode = barcode,
                     priceCents = priceCents,
                     storeName = store.ifEmpty { null },
-                    initialQuantity = 1, // acabas de escanear una unidad
+                    initialQuantity = quantity.coerceAtLeast(0),
                 )
                 closeNewProduct()
                 message("$cleanName añadido a la despensa")
@@ -253,6 +293,15 @@ class PantryViewModel(
                 if (priceChanged && newPrice != null) "$cleanName: precio guardado en el historial ($store)"
                 else "$cleanName actualizado"
             )
+        }
+    }
+
+    fun onDeleteEdit() {
+        val item = editing.value ?: return
+        viewModelScope.launch {
+            repository.deleteProduct(item.id)
+            editing.value = null
+            message("${item.name} eliminado de la despensa")
         }
     }
 

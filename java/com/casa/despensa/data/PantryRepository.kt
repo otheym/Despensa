@@ -5,7 +5,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 sealed interface ScanResult {
-    data class Incremented(val product: Product) : ScanResult
+    /** El código ya está registrado: el usuario decide cuánto sumar o restar. */
+    data class Found(val product: Product) : ScanResult
     data class Unknown(val barcode: String) : ScanResult
 }
 
@@ -54,9 +55,10 @@ class PantryRepository(
         dao.setQuantity(id, quantity, clock())
     }
 
-    suspend fun registerScan(barcode: String): ScanResult =
-        dao.incrementByBarcode(barcode, clock())
-            ?.let { ScanResult.Incremented(it) }
+    /** Busca el código escaneado sin tocar el stock: la cantidad se decide en el diálogo. */
+    suspend fun findScanned(barcode: String): ScanResult =
+        dao.findByBarcode(barcode)
+            ?.let { ScanResult.Found(it) }
             ?: ScanResult.Unknown(barcode)
 
     // ---------- Búsqueda en línea ----------
@@ -132,6 +134,11 @@ class PantryRepository(
             }
             priceDao.recordPrice(id, newPriceCents, store, now)
         }
+    }
+
+    /** Borrar producto por id. */
+    suspend fun deleteProduct(id: Long) {
+        dao.deleteById(id)
     }
 
     /** Lista de la compra / OCR: "comprado" → al menos GREEN_MIN unidades, y precio al historial si lo hay. */

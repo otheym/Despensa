@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
             dao = db.productDao(),
             priceDao = db.priceDao(),
             // Open Food Facts pide identificar la app: "NombreApp/Versión (email de contacto)".
-            lookup = OpenFactsLookup(userAgent = "Despensa/1.0 (tucorreo@dedondesea.com)"),
+            lookup = OpenFactsLookup(userAgent = "Despensa/1.0 (unemail@valido_.com)"),
         )
     }
 

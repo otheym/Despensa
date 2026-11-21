@@ -1,6 +1,7 @@
 package com.casa.despensa.ui.pantry
 
 
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -52,6 +54,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -107,8 +110,11 @@ fun PantryRoute(
         onScanClick = onScanClick,
         onConfirmNewProduct = viewModel::onRegisterNewProduct,
         onDismissNewProduct = viewModel::onDismissNewProduct,
+        onConfirmScan = viewModel::onConfirmScan,
+        onDismissScan = viewModel::onDismissScan,
         onEditClick = viewModel::onEditClick,
         onSaveEdit = viewModel::onSaveEdit,
+        onDeleteEdit = viewModel::onDeleteEdit,
         onDismissEdit = viewModel::onDismissEdit,
         modifier = modifier,
     )
@@ -155,10 +161,13 @@ fun PantryScreen(
     onIncrement: (Long) -> Unit,
     onDecrement: (Long) -> Unit,
     onScanClick: () -> Unit,
-    onConfirmNewProduct: (name: String, price: String, store: String) -> Unit,
+    onConfirmNewProduct: (name: String, price: String, store: String, quantity: Int) -> Unit,
     onDismissNewProduct: () -> Unit,
+    onConfirmScan: (quantity: Int) -> Unit,
+    onDismissScan: () -> Unit,
     onEditClick: (PantryItemUi) -> Unit,
     onSaveEdit: (name: String, price: String, store: String) -> Unit,
+    onDeleteEdit: () -> Unit,
     onDismissEdit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -199,6 +208,17 @@ fun PantryScreen(
         }
     }
 
+    state.scanned?.let { item ->
+        ScanQuantityDialog(
+            item = item,
+            onConfirm = { quantity, scanAnother ->
+                onConfirmScan(quantity)
+                if (scanAnother) onScanClick()
+            },
+            onDismiss = onDismissScan,
+        )
+    }
+
     state.newProduct?.let { draft ->
         NewProductDialog(
             draft = draft,
@@ -215,6 +235,7 @@ fun PantryScreen(
             knownStores = state.storeNames,
             lastStoreName = state.lastStoreName,
             onSave = onSaveEdit,
+            onDelete = onDeleteEdit,
             onDismiss = onDismissEdit,
         )
     }
@@ -421,15 +442,80 @@ private fun EmptyState(query: String, onAddFromQuery: () -> Unit) {
     }
 }
 
+/**
+ * Tras escanear un producto ya registrado: permite sumar o restar unidades.
+ * Parte de la cantidad actual + 1 (el caso habitual al volver de la compra);
+ * para retirar, basta con bajar con [−].
+ */
+@Composable
+private fun ScanQuantityDialog(
+    item: ScannedProduct,
+    onConfirm: (quantity: Int, scanAnother: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var target by rememberSaveable(item.id) { mutableIntStateOf(item.quantity + 1) }
+    val delta = target - item.quantity
+    val newStatus = StockStatus.from(target)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "En casa ahora: ${item.quantity}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Nueva cantidad", modifier = Modifier.weight(1f))
+                    QuantityStepper(
+                        name = item.name,
+                        quantity = target,
+                        onDecrement = { if (target > 0) target-- },
+                        onIncrement = { if (target < 999) target++ },
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(10.dp)
+                            .background(newStatus.color(), CircleShape),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        when {
+                            delta > 0 -> "Se añaden $delta · ${newStatus.label()}"
+                            delta < 0 -> "Se retiran ${-delta} · ${newStatus.label()}"
+                            else -> "Sin cambios"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Row {
+                TextButton(onClick = { onConfirm(target, true) }) { Text("Guardar y escanear otro") }
+                TextButton(onClick = { onConfirm(target, false) }) { Text("Guardar") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        },
+    )
+}
+
 @Composable
 private fun NewProductDialog(
     draft: NewProductDraft,
     knownStores: List<String>,
     lastStoreName: String?,
-    onConfirm: (name: String, price: String, store: String) -> Unit,
+    onConfirm: (name: String, price: String, store: String, quantity: Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by rememberSaveable(draft.barcode) { mutableStateOf("") }
+    var quantity by rememberSaveable(draft.barcode) { mutableIntStateOf(1) }
     var nameEditedByUser by rememberSaveable(draft.barcode) { mutableStateOf(false) }
     var price by rememberSaveable(draft.barcode) { mutableStateOf("") }
     var store by rememberSaveable(draft.barcode) { mutableStateOf(lastStoreName.orEmpty()) }
@@ -465,6 +551,15 @@ private fun NewProductDialog(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Cantidad en casa", modifier = Modifier.weight(1f))
+                    QuantityStepper(
+                        name = name.ifBlank { "el producto" },
+                        quantity = quantity,
+                        onDecrement = { if (quantity > 0) quantity-- },
+                        onIncrement = { if (quantity < 999) quantity++ },
+                    )
+                }
                 PriceField(value = price, onValueChange = { price = it }, isValid = priceValid, label = "Precio (opcional)")
                 if (storeRequired) {
                     StoreField(value = store, onValueChange = { store = it }, knownStores = knownStores)
@@ -473,7 +568,7 @@ private fun NewProductDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(name, price, store) },
+                onClick = { onConfirm(name, price, store, quantity) },
                 enabled = name.isNotBlank() && priceValid && (!storeRequired || store.isNotBlank()),
             ) { Text("Guardar") }
         },
@@ -509,6 +604,7 @@ private fun EditProductDialog(
     knownStores: List<String>,
     lastStoreName: String?,
     onSave: (name: String, price: String, store: String) -> Unit,
+    onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by rememberSaveable(item.id) { mutableStateOf(item.name) }
@@ -516,6 +612,7 @@ private fun EditProductDialog(
         mutableStateOf(item.lastPriceCents?.let(::centsToText).orEmpty())
     }
     var store by rememberSaveable(item.id) { mutableStateOf(lastStoreName.orEmpty()) }
+    var showConfirmDelete by rememberSaveable(item.id) { mutableStateOf(false) }
 
     val parsed = parsePriceToCents(price)
     val priceValid = price.isBlank() || parsed != null
@@ -552,9 +649,39 @@ private fun EditProductDialog(
             ) { Text("Guardar") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancelar") }
+            Row {
+                TextButton(
+                    onClick = { showConfirmDelete = true },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Eliminar")
+                }
+                TextButton(onClick = onDismiss) { Text("Cancelar") }
+            }
         },
     )
+
+    if (showConfirmDelete) {
+        AlertDialog(
+            onDismissRequest = { showConfirmDelete = false },
+            title = { Text("¿Eliminar producto?") },
+            text = { Text("Se eliminará «${item.name}» de la despensa. Esta acción no se puede deshacer.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showConfirmDelete = false
+                        onDelete()
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Eliminar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmDelete = false }) { Text("Cancelar") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -639,8 +766,9 @@ private fun PantryScreenPreview() {
             ),
             snackbarHostState = remember { SnackbarHostState() },
             onQueryChange = {}, onAddFromQuery = {}, onIncrement = {}, onDecrement = {},
-            onScanClick = {}, onConfirmNewProduct = { _, _, _ -> }, onDismissNewProduct = {},
-            onEditClick = {}, onSaveEdit = { _, _, _ -> }, onDismissEdit = {},
+            onScanClick = {}, onConfirmNewProduct = { _, _, _, _ -> }, onDismissNewProduct = {},
+            onConfirmScan = {}, onDismissScan = {},
+            onEditClick = {}, onSaveEdit = { _, _, _ -> }, onDeleteEdit = {}, onDismissEdit = {},
         )
     }
 }

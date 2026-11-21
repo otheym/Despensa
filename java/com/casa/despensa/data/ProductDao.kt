@@ -73,6 +73,9 @@ abstract class ProductDao {
     @Delete
     abstract suspend fun delete(product: Product)
 
+    @Query("DELETE FROM products WHERE id = :id")
+    abstract suspend fun deleteById(id: Long)
+
     /** Cambiar el nombre cuenta como edición: gana en la sincronización si es la más reciente. */
     @Query("UPDATE products SET name = :name, updated_at = :now, meta_updated_at = :now WHERE id = :id")
     abstract suspend fun updateName(id: Long, name: String, now: Long)
